@@ -535,7 +535,7 @@ const TOOLS = [
         merchantRules: {
           type: 'object',
           description:
-            '가맹점명 → 규칙 맵. { "스타벅스": {merchant:"스타벅스", category:"식비", payment:"토스뱅크 하나카드 Wide"} } 형태. ' +
+            '가맹점명 → 규칙 맵. { "스타벅스": {merchant:"스타벅스", category:"식비", payment:"주력카드"} } 형태. ' +
             'category/payment는 config 등록명과 일치. 사용자가 확정하지 않은 잠정 추론이면 그 값에 confirm:false 를 넣어 hits를 올리지 않는다.'
         }
       }
