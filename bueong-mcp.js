@@ -50,12 +50,11 @@ function bueongDir() {
 }
 const inboxFile = () => path.join(bueongDir().dir, 'inbox.json');
 
-// 앱 샌드박스 폴더는 macOS 가 「다른 앱의 데이터」로 지킨다. 폴더가 있다는 것까지는 보여도 안쪽은
-// 막힐 수 있다(이 맥의 클로드 코드에서 실제로 「Operation not permitted」, 2026-10-03).
-// 막히면 날것 오류 대신 무엇을 하면 되는지 말한다. 막히지 않았으면 null.
-const BLOCKED_HELP = '맥이 클로드의 가계부엉 폴더 접근을 막았습니다(아이클라우드 드라이브가 꺼져 있어 앱이 자기 폴더에만 자료를 둔 상태). ' +
-  '가장 쉬운 길은 시스템 설정 → Apple 계정 → iCloud → iCloud Drive 를 켜고 가계부엉을 한 번 껐다 켜는 것입니다. ' +
-  '아이클라우드를 안 쓰려면, 맥이 「Claude 가 다른 앱의 데이터에 접근하려고 합니다」라고 물을 때 허용을 누르세요.';
+// 앱 샌드박스 폴더는 macOS 가 「다른 앱의 데이터」로 지킨다. 폴더가 있다는 것까지는 보여도 안쪽은 막힌다.
+// 2026-10-03 iCloud 로그인이 없는 시험 맥 사용자 + 클로드 데스크톱(무료)에서 실제로 막혔고, 허용을 묻는
+// 창도 뜨지 않았다. 그래서 길은 하나 — iCloud Drive 를 켜는 것. 막히면 날것 오류 대신 그것을 말한다.
+const BLOCKED_HELP = '맥이 클로드의 가계부엉 폴더 접근을 막았습니다. 이 맥은 iCloud Drive 가 꺼져 있어 가계부엉이 자료를 앱 안에만 두고 있고, ' +
+  '맥은 다른 앱이 그 안을 읽지 못하게 합니다. 시스템 설정 → Apple 계정 → iCloud 에서 iCloud Drive 를 켜고 가계부엉을 한 번 껐다 켜 주세요.';
 function blockedLocal() {
   const { dir, where } = bueongDir();
   if (where !== 'local') return null;
@@ -865,7 +864,7 @@ function handle(line) {
       ok(id, {
         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'bueong', version: '1.2.0' },
+        serverInfo: { name: 'bueong', version: '1.2.1' },
         instructions: INSTRUCTIONS
       });
       break;
