@@ -2,11 +2,17 @@
   "manifest_version": "0.3",
   "name": "bueong",
   "display_name": "가계부엉",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "카드·통장 캡처를 클로드에 올리면 거래를 읽어 가계부엉 받은편지함에 넣어 줍니다.",
   "long_description": "가계부엉(아이폰·맥 가계부 앱)의 「클로드 연동」용 연결 도구입니다. 맥 안에서만 돌고 외부 서버로 보내는 것이 없습니다. 맥에서 가계부엉을 한 번 실행하고 설정에서 「클로드 연동」을 켠 뒤 쓰세요.",
-  "author": { "name": "이영주", "url": "https://github.com/impro0126-pixel" },
-  "repository": { "type": "git", "url": "https://github.com/impro0126-pixel/bueong-claude.git" },
+  "author": {
+    "name": "이영주",
+    "url": "https://github.com/impro0126-pixel"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/impro0126-pixel/bueong-claude.git"
+  },
   "homepage": "https://apps.apple.com/app/id6811481053",
   "documentation": "https://github.com/impro0126-pixel/bueong-claude#readme",
   "support": "https://github.com/impro0126-pixel/bueong-claude/issues",
@@ -16,16 +22,50 @@
     "entry_point": "server/bueong-mcp.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/bueong-mcp.js"]
+      "args": [
+        "${__dirname}/server/bueong-mcp.js"
+      ]
     }
   },
   "tools": [
-    { "name": "get_names", "description": "가계부엉에 등록된 통장·카드·분류 이름 읽기" },
-    { "name": "get_transactions", "description": "가계부엉의 거래를 기간으로 읽기" },
-    { "name": "get_config", "description": "클로드가 기억하는 기본 결제수단·가맹점 규칙 읽기" },
-    { "name": "set_config", "description": "그 기억 저장" },
-    { "name": "add_transactions", "description": "거래·잔액·카드 합계를 받은편지함에 넣기" }
+    {
+      "name": "get_names",
+      "description": "가계부엉에 등록된 통장·카드·분류 이름 읽기"
+    },
+    {
+      "name": "get_transactions",
+      "description": "가계부엉의 거래를 기간으로 읽기"
+    },
+    {
+      "name": "get_captures",
+      "description": "아이폰에서 보낸 캡처를 그림으로 가져오기"
+    },
+    {
+      "name": "finish_captures",
+      "description": "거래를 다 넣은 캡처를 처리됨으로 옮기기"
+    },
+    {
+      "name": "get_config",
+      "description": "클로드가 기억하는 기본 결제수단·가맹점 규칙 읽기"
+    },
+    {
+      "name": "set_config",
+      "description": "그 기억 저장"
+    },
+    {
+      "name": "add_transactions",
+      "description": "거래·잔액·카드 합계를 받은편지함에 넣기"
+    }
   ],
-  "keywords": ["가계부", "가계부엉", "household", "budget"],
-  "compatibility": { "platforms": ["darwin"] }
+  "keywords": [
+    "가계부",
+    "가계부엉",
+    "household",
+    "budget"
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin"
+    ]
+  }
 }

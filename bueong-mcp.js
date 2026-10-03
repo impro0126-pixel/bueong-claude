@@ -347,6 +347,122 @@ function doGetTransactions(args) {
   return out;
 }
 
+// ---- 폰에서 보낸 캡처 (가계부엉 아이폰 「캡처 넣는 방법 → 맥의 클로드에 보내기」) ----
+// 폰이 가계부엉 폴더의 captures/ 에 이미지를 놓고 요청.json 에 「언제·몇 장·한 줄 메모」를 적는다.
+// 맥의 클로드가 거래로 만들어 받은편지함에 넣은 뒤 그 캡처를 captures/처리됨/ 으로 옮기면,
+// 폰 화면이 「맥에서 처리했어요」로 바뀐다(앱 `CaptureStore`). 2026-10-03 까지는 이 길이 비공개
+// 스크립트(scripts/캡처받기.sh)에만 있어서, 앱스토어에서 받은 사람의 캡처는 쌓이기만 했다.
+const CAPTURE_DONE = '처리됨';
+const CAPTURE_REQUEST = '요청.json';
+const CAPTURE_EXT = /\.(png|jpe?g|heic|heif|webp)$/i;
+const captureDir = () => path.join(bueongDir().dir, 'captures');
+
+// 맥 파일 시스템은 한글 이름을 자모로 풀어 둔다(NFD). 견줄 때는 모아 쓴 꼴(NFC)로.
+const nfc = s => String(s).normalize('NFC');
+
+// 기다리는 캡처: [{ name, entry, downloaded }]. 아직 안 내려온 파일은 `.이름.png.icloud` 껍데기다.
+function waitingCaptures(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  for (const entry of entries.sort()) {
+    let name = nfc(entry), downloaded = true;
+    if (name.startsWith('.') && name.endsWith('.icloud')) { name = name.slice(1, -'.icloud'.length); downloaded = false; }
+    if (name.startsWith('.') || name === CAPTURE_REQUEST || !CAPTURE_EXT.test(name)) continue;
+    try { if (fs.statSync(path.join(dir, entry)).isDirectory()) continue; } catch { continue; }
+    out.push({ name, entry, downloaded });
+  }
+  return out;
+}
+
+function captureMemos(dir) {
+  const memo = {};
+  const req = readJSON(path.join(dir, CAPTURE_REQUEST), null);
+  for (const b of (req && Array.isArray(req.batches) ? req.batches : [])) {
+    for (const f of (Array.isArray(b.files) ? b.files : [])) memo[nfc(f)] = { sentAt: b.sentAt || '', memo: b.memo || '' };
+  }
+  return memo;
+}
+
+// 클로드에게 넘길 그림. 폰 캡처는 크고(수 MB) 길어서, 맥에 늘 있는 sips 로 긴 변 2000px JPEG 로 줄인다.
+// 줄이기에 실패하면 원본이 작을 때만 그대로 보낸다.
+const MAX_RAW_BYTES = 3 * 1024 * 1024;
+function captureImage(file) {
+  const tmp = path.join(require('os').tmpdir(), `bueong-cap-${process.pid}-${Date.now()}.jpg`);
+  try {
+    require('child_process').execFileSync('/usr/bin/sips',
+      ['-s', 'format', 'jpeg', '-s', 'formatOptions', '70', '-Z', '2000', file, '--out', tmp],
+      { stdio: 'ignore', timeout: 30000 });
+    return { data: fs.readFileSync(tmp).toString('base64'), mimeType: 'image/jpeg' };
+  } catch {
+    const size = (() => { try { return fs.statSync(file).size; } catch { return Infinity; } })();
+    if (size > MAX_RAW_BYTES || !/\.(png|jpe?g)$/i.test(file)) return null;
+    return { data: fs.readFileSync(file).toString('base64'), mimeType: /\.png$/i.test(file) ? 'image/png' : 'image/jpeg' };
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+const CAPTURE_BATCH = 3;
+function doGetCaptures(args) {
+  const blocked = blockedLocal();
+  if (blocked) throw new Error(blocked);
+  const dir = captureDir();
+  if (!fs.existsSync(dir)) {
+    return { text: '폰에서 보낸 캡처가 없습니다(캡처 폴더가 아직 없음). 아이폰 가계부엉 → 설정 → 「캡처 넣는 방법」을 「맥의 클로드에 보내기」로 두고 캡처를 보내면 여기에 생깁니다.' };
+  }
+  const all = waitingCaptures(dir);
+  if (!all.length) return { text: '기다리는 캡처가 없습니다.' };
+  const memos = captureMemos(dir);
+  const limit = Math.max(1, Math.min(CAPTURE_BATCH, parseInt(args.limit, 10) || CAPTURE_BATCH));
+  // 아직 안 내려온 것은 내려받기를 걸어 두고 이번에는 건너뛴다.
+  const pending = all.filter(c => !c.downloaded);
+  for (const c of pending) {
+    try { require('child_process').execFileSync('/usr/bin/brctl', ['download', path.join(dir, c.entry)], { stdio: 'ignore', timeout: 10000 }); } catch {}
+  }
+  const ready = all.filter(c => c.downloaded);
+  const shown = ready.slice(0, limit);
+  const content = [];
+  const lines = [`기다리는 캡처 ${all.length}장 가운데 ${shown.length}장을 보여 드립니다.` +
+    (pending.length ? ` (${pending.length}장은 아직 iCloud 에서 내려오는 중 — 잠시 뒤 다시 부르세요)` : '') +
+    (ready.length > shown.length ? ` 나머지 ${ready.length - shown.length}장은 이것을 처리한 뒤 다시 부르세요.` : '')];
+  lines.push('순서: 캡처마다 거래를 뽑아 add_transactions 로 보낸 뒤, **넣은 캡처만** finish_captures 로 옮기세요. ' +
+    '애매해서 못 넣은 캡처는 옮기지 말고 사용자에게 물으세요 — 옮기는 순간 폰에서는 끝난 일이 됩니다. ' +
+    '메모는 참고일 뿐, 금액·날짜·상호는 캡처가 정답입니다.');
+  content.push({ type: 'text', text: lines.join('\n') });
+  for (const c of shown) {
+    const m = memos[c.name] || {};
+    const img = captureImage(path.join(dir, c.entry));
+    content.push({ type: 'text', text: `▶ ${c.name}` + (m.sentAt ? ` · 올린 때 ${m.sentAt}` : '') + (m.memo ? ` · 메모: ${m.memo}` : '') +
+      (img ? '' : ' — ⚠️ 그림을 읽지 못했습니다. 사용자에게 다시 보내 달라고 하세요.') });
+    if (img) content.push({ type: 'image', data: img.data, mimeType: img.mimeType });
+  }
+  return { content };
+}
+
+function doFinishCaptures(args) {
+  const blocked = blockedLocal();
+  if (blocked) throw new Error(blocked);
+  const names = Array.isArray(args.names) ? args.names.map(nfc) : [];
+  if (!names.length) throw new Error('옮길 캡처 이름(names)이 없습니다');
+  const dir = captureDir();
+  const byName = new Map(waitingCaptures(dir).map(c => [c.name, c]));
+  const doneDir = path.join(dir, CAPTURE_DONE);
+  const moved = [], missing = [];
+  for (const n of names) {
+    // 이름만 받는다 — 경로가 섞이면 captures 밖의 파일을 옮길 수 있다.
+    const c = byName.get(n);
+    if (!c || n.includes('/') || n.includes('..')) { missing.push(n); continue; }
+    fs.mkdirSync(doneDir, { recursive: true });
+    const target = c.downloaded ? c.name : c.entry;   // 껍데기는 껍데기째 옮긴다 — iCloud 가 알아서 따라간다
+    fs.renameSync(path.join(dir, c.entry), path.join(doneDir, target));
+    moved.push(n);
+  }
+  let msg = moved.length ? `${moved.length}장을 처리됨으로 옮겼습니다. 폰 화면이 「맥에서 처리했어요」로 바뀝니다.` : '옮긴 캡처가 없습니다.';
+  if (missing.length) msg += `\n⚠️ 기다리는 캡처에 없는 이름: ${missing.join(', ')} — get_captures 에 나온 이름 그대로 주세요.`;
+  return msg;
+}
+
 function configNames() {
   const cfg = readJSON(CONFIG, null);
   const s = new Set();
@@ -557,6 +673,18 @@ const TOOLS = [
     }
   },
   {
+    name: 'get_captures',
+    description: '아이폰 가계부엉에서 「맥의 클로드에 보내기」로 보낸 캡처를 가져온다(한 번에 3장까지, 그림으로). ' +
+      '사용자가 「캡처 처리해줘」「폰에서 보낸 거 넣어줘」라고 하면 부른다. 거래로 만들어 add_transactions 로 보낸 뒤, 넣은 캡처만 finish_captures 로 옮길 것.',
+    inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 3, description: '보여 줄 장 수(기본 3)' } } }
+  },
+  {
+    name: 'finish_captures',
+    description: 'add_transactions 로 거래를 다 넣은 캡처를 처리됨으로 옮긴다. 그러면 폰 화면이 「맥에서 처리했어요」로 바뀐다. ' +
+      '못 넣은 캡처는 옮기지 말 것 — 옮기면 폰에서는 끝난 일이 된다. 이름은 get_captures 에 나온 그대로.',
+    inputSchema: { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '캡처 파일 이름들' } }, required: ['names'] }
+  },
+  {
     name: 'get_config',
     description: '클로드가 기억해 둔 기본결제수단과 가맹점 학습규칙을 가져온다. 거래를 분류하기 전에 get_names 와 함께 호출. 카드·통장 이름은 get_names 가 정본이고, 사본이 없을 때만 사용자에게 물어 set_config 로 저장.',
     inputSchema: { type: 'object', properties: {} }
@@ -697,6 +825,7 @@ const INSTRUCTIONS = [
   'payment·toAccount·category 는 get_names 의 이름을 글자 그대로 쓴다. 목록에 없는 카드·통장·분류가 나오면 추측하지 말고 사용자에게 앱에 추가할지 묻는다.',
   '분류나 결제수단이 애매하면 조용히 고르지 말고 번호 선택지로 묻는다. 사용자가 확인해 준 가맹점은 set_config 의 merchantRules 로 저장한다 — hits 가 3 이상인 규칙은 묻지 않고 적용해도 된다.',
   '「취소」·「승인취소」 거래는 넣지 않는다. 금액·날짜·상호는 캡처에 적힌 그대로 쓴다.',
+  '사용자가 「캡처 처리해줘」라고 하면 get_captures 로 폰에서 보낸 캡처를 받아 위 순서로 넣고, 넣은 캡처만 finish_captures 로 옮긴다.',
   '지출 질문은 get_transactions 로 읽어 답한다. 이체(accountTransfer)는 지출에 넣지 않고, 합계에 무엇을 더했는지 밝힌다. 통장 잔액은 이 도구로 알 수 없으니 앱 화면을 보라고 안내한다.'
 ].join('\n');
 
@@ -710,11 +839,16 @@ function handleToolCall(id, params) {
   const args = (params && params.arguments) || {};
   try {
     let text;
+    if (name === 'get_captures') {
+      const r = doGetCaptures(args);
+      return ok(id, { content: r.content || [{ type: 'text', text: r.text }] });
+    }
     if (name === 'get_names') text = doGetNames();
     else if (name === 'get_transactions') text = doGetTransactions(args);
     else if (name === 'get_config') text = doGetConfig();
     else if (name === 'set_config') text = doSetConfig(args);
     else if (name === 'add_transactions') text = doAddTransactions(args);
+    else if (name === 'finish_captures') text = doFinishCaptures(args);
     else { return ok(id, { content: [{ type: 'text', text: '알 수 없는 도구: ' + name }], isError: true }); }
     ok(id, { content: [{ type: 'text', text }] });
   } catch (e) {
@@ -731,7 +865,7 @@ function handle(line) {
       ok(id, {
         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'bueong', version: '1.1.1' },
+        serverInfo: { name: 'bueong', version: '1.2.0' },
         instructions: INSTRUCTIONS
       });
       break;
