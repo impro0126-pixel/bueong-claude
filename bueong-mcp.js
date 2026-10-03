@@ -7,7 +7,8 @@
  * 통신: newline-delimited JSON-RPC 2.0 over stdio (MCP stdio transport)
  *
  * 받은편지함 자리 (2026-09-17 6단계부터 한 곳):
- *  - `BUEONG_DIR/inbox.json` — 가계부엉. **정본.** 읽기(중복 판정)도 쓰기도 여기 하나.
+ *  - 가계부엉 폴더의 `inbox.json` — **정본.** 읽기(중복 판정)도 쓰기도 여기 하나.
+ *    폴더는 아이클라우드 드라이브, 아이클라우드를 끈 맥이면 앱 샌드박스 안 Documents (`bueongDir`).
  * 웹앱(가계부.app)은 은퇴했다. `KAKEIBO_DIR` 은 설정 파일을 옛 자리에서 옮겨 올 때만 읽는다.
  */
 const fs = require('fs');
@@ -16,26 +17,61 @@ const path = require('path');
 // 옛 웹앱 자리. 지금은 설정 파일(가계부-config.json)을 한 번 옮겨 오는 데만 쓴다.
 const OLD_KAKEIBO_DIR = (process.env.KAKEIBO_DIR || '').trim();
 
-// 가계부엉(네이티브앱)의 받은편지함. 아이클라우드 드라이브 앱 컨테이너의 Documents.
-// 비워 두면 표준 자리를 쓴다 — 앱스토어에서 받은 사람은 설정에 경로를 적지 않아도 된다(2026-10-03).
-const DEFAULT_BUEONG_DIR = path.join(require('os').homedir(), 'Library', 'Mobile Documents',
-  'iCloud~com~bueong~app', 'Documents');
-const BUEONG_DIR = (process.env.BUEONG_DIR || '').trim() || DEFAULT_BUEONG_DIR;
-const INBOX = BUEONG_DIR ? path.join(BUEONG_DIR, 'inbox.json') : '';
+// 가계부엉(네이티브앱)의 받은편지함 자리. 앱(`CloudContainer.documents`)과 같은 규칙으로 고른다.
+//  ① BUEONG_DIR 을 적었으면 그것.
+//  ② 아이클라우드 드라이브 앱 컨테이너의 Documents — 보통은 여기.
+//  ③ 아이클라우드를 끈 맥이면 앱이 샌드박스 안 Documents 로 물러선다. 거기도 본다(2026-10-03).
+//     이게 없으면 아이클라우드를 끈 사람은 클로드가 「앱을 한 번 띄우세요」라는 틀린 말만 했다.
+// 아이클라우드를 쓰다 끈 맥은 두 폴더가 다 남아 있을 수 있다. 그때는 맥 앱이 사본(state.json)을
+// 더 최근에 쓴 쪽이 지금 앱이 보는 자리다. 사본이 어느 쪽에도 없으면 아이클라우드 쪽.
+// 앱이 도중에 자리를 바꿀 수 있으니 상수로 박지 않고 도구를 부를 때마다 고른다.
+const HOME = require('os').homedir();
+const ICLOUD_CONTAINER = path.join(HOME, 'Library', 'Mobile Documents', 'iCloud~com~bueong~app');
+const ICLOUD_DIR = path.join(ICLOUD_CONTAINER, 'Documents');
+const LOCAL_DIR = path.join(HOME, 'Library', 'Containers', 'com.bueong.app', 'Data', 'Documents');
+const ENV_BUEONG_DIR = (process.env.BUEONG_DIR || '').trim();
+
+function mtime(file) {
+  try { return fs.statSync(file).mtimeMs; } catch { return 0; }
+}
+// { dir, where } — where 는 'env' | 'icloud' | 'local'. 둘 다 없으면 아이클라우드 자리를 돌려주고,
+// 쓰기는 writeInboxAll 이 「앱을 한 번 띄우세요」로 멈춘다(컨테이너를 손으로 파지 않는다).
+function bueongDir() {
+  if (ENV_BUEONG_DIR) return { dir: ENV_BUEONG_DIR, where: 'env' };
+  const hasICloud = fs.existsSync(ICLOUD_CONTAINER);
+  const hasLocal = fs.existsSync(LOCAL_DIR);
+  if (hasICloud && hasLocal) {
+    const ti = Math.max(mtime(path.join(ICLOUD_DIR, 'state.json')), mtime(path.join(ICLOUD_DIR, '.state.json.icloud')));
+    const tl = mtime(path.join(LOCAL_DIR, 'state.json'));
+    return tl > ti ? { dir: LOCAL_DIR, where: 'local' } : { dir: ICLOUD_DIR, where: 'icloud' };
+  }
+  if (hasLocal) return { dir: LOCAL_DIR, where: 'local' };
+  return { dir: ICLOUD_DIR, where: 'icloud' };
+}
+const inboxFile = () => path.join(bueongDir().dir, 'inbox.json');
+
+// 앱 샌드박스 폴더는 macOS 가 「다른 앱의 데이터」로 지킨다. 폴더가 있다는 것까지는 보여도 안쪽은
+// 막힐 수 있다(이 맥의 클로드 코드에서 실제로 「Operation not permitted」, 2026-10-03).
+// 막히면 날것 오류 대신 무엇을 하면 되는지 말한다. 막히지 않았으면 null.
+const BLOCKED_HELP = '맥이 클로드의 가계부엉 폴더 접근을 막았습니다(아이클라우드 드라이브가 꺼져 있어 앱이 자기 폴더에만 자료를 둔 상태). ' +
+  '가장 쉬운 길은 시스템 설정 → Apple 계정 → iCloud → iCloud Drive 를 켜고 가계부엉을 한 번 껐다 켜는 것입니다. ' +
+  '아이클라우드를 안 쓰려면, 맥이 「Claude 가 다른 앱의 데이터에 접근하려고 합니다」라고 물을 때 허용을 누르세요.';
+function blockedLocal() {
+  const { dir, where } = bueongDir();
+  if (where !== 'local') return null;
+  try { fs.readdirSync(dir); return null; }
+  catch (e) { return (e && (e.code === 'EPERM' || e.code === 'EACCES')) ? BLOCKED_HELP : null; }
+}
 
 // 맥 가계부엉이 받은편지함 옆에 두는 자료 사본(「클로드 연동」을 켠 맥에서만 쓴다). 서버는 읽기만 한다.
 // get_names 는 이름만, get_transactions 는 사용자가 물은 기간의 거래만 꺼낸다(2026-10-03 결정).
 // 통장 잔액·원금·연말정산 설정·목표는 어느 도구로도 싣지 않는다.
-const STATE = BUEONG_DIR ? path.join(BUEONG_DIR, 'state.json') : '';
-
-function requireInbox() {
-  if (!INBOX) throw new Error('가계부엉 폴더를 못 정했습니다 — BUEONG_DIR 을 확인하세요');
-}
+const stateFile = () => path.join(bueongDir().dir, 'state.json');
 
 // 받은편지함을 쓸 자리 목록. 지금은 한 곳뿐이지만, writeInboxAll 이 여러 자리를 받는 모양은
 // 그대로 둔다 — 자리마다 성공/실패를 솔직히 보고하는 안전장치를 잃지 않기 위해서.
 function inboxTargets() {
-  return [{ label: '가계부엉', file: INBOX }];
+  return [{ label: '가계부엉', file: inboxFile() }];
 }
 
 // 클로드 설정(카드 목록·가맹점 학습 규칙)은 **맥 로컬**에 둔다. 웹앱 샌드박스는 은퇴했고,
@@ -136,7 +172,7 @@ function writeJSONAtomic(file, obj) {
 // 영영 안 오는, 가장 찾기 어려운 고장이다. 그래서 컨테이너가 없으면 **그 자리는 건너뛰고 왜인지
 // 말한다.** 컨테이너 안쪽(Documents)은 있으면 쓰고 없으면 만든다.
 function isUnderICloudDrive(file) {
-  return path.resolve(file).startsWith(path.join(require('os').homedir(), 'Library', 'Mobile Documents') + path.sep);
+  return path.resolve(file).startsWith(path.join(HOME, 'Library', 'Mobile Documents') + path.sep);
 }
 function writeInboxAll(obj) {
   return inboxTargets().map(t => {
@@ -147,7 +183,7 @@ function writeInboxAll(obj) {
         const container = path.dirname(dir);
         if (isUnderICloudDrive(t.file) && !fs.existsSync(container)) {
           return { label: t.label, file: t.file, ok: false, skipped: true,
-                   error: '아이클라우드 컨테이너가 아직 없습니다 — 그 맥에서 앱을 한 번 띄우세요' };
+                   error: '가계부엉 폴더가 아직 없습니다 — 이 맥에서 가계부엉 앱을 한 번 켜고, 설정에서 「클로드 연동」을 켜 주세요' };
         }
         fs.mkdirSync(dir, { recursive: true });
       }
@@ -200,7 +236,7 @@ function doSetConfig(args) {
   const prev = readJSONStrict(CONFIG, {});
   const cfg = {
     version: 1,
-    받은편지함: INBOX,
+    받은편지함: inboxFile(),
     cards: args.cards !== undefined ? args.cards : (prev.cards || []),
     accounts: args.accounts !== undefined ? args.accounts : (prev.accounts || []),
     기본결제수단: args.defaultPayments !== undefined ? args.defaultPayments : (prev.기본결제수단 || {}),
@@ -235,8 +271,7 @@ function doSetConfig(args) {
 
 // 사본에서 이름만 추린다. 사본이 없거나 못 읽으면 null — 「이름이 없다」와 「사본이 없다」를 섞지 않는다.
 function appNames() {
-  if (!STATE) return null;
-  const st = readJSON(STATE, null);
+  const st = readJSON(stateFile(), null);
   if (!st || typeof st !== 'object') return null;
   const pick = (list, more) => (Array.isArray(list) ? list : [])
     .filter(x => x && typeof x.name === 'string' && x.name.trim())
@@ -252,10 +287,12 @@ function appNames() {
 }
 
 function doGetNames() {
+  const blocked = blockedLocal();
+  if (blocked) throw new Error(blocked);
   const app = appNames();
   if (!app) {
     // 아직 안 내려온 아이클라우드 파일은 `.state.json.icloud` 자리표시로만 있다.
-    const placeholder = STATE && fs.existsSync(path.join(path.dirname(STATE), '.state.json.icloud'));
+    const placeholder = fs.existsSync(path.join(path.dirname(stateFile()), '.state.json.icloud'));
     return (placeholder
       ? '가계부엉 사본이 아직 아이클라우드에서 안 내려왔습니다. 잠시 뒤 다시 부르세요. '
       : '가계부엉 사본(state.json)이 없습니다. 맥에서 가계부엉을 켜고 설정 → 「클로드 연동」을 켜면 생깁니다. ') +
@@ -280,7 +317,9 @@ function doGetNames() {
 // 금액은 사본에 적힌 그대로다. 합계는 여기서 내지 않는다 — 월할·환급(음수)·이체를 어떻게 볼지는 질문마다 다르다.
 const TX_LIMIT = 500;
 function doGetTransactions(args) {
-  const st = STATE ? readJSON(STATE, null) : null;
+  const blocked = blockedLocal();
+  if (blocked) throw new Error(blocked);
+  const st = readJSON(stateFile(), null);
   if (!st || !Array.isArray(st.transactions)) {
     return '가계부엉 사본(state.json)이 없어 거래를 읽을 수 없습니다. 맥에서 가계부엉을 켜고 설정 → 「클로드 연동」을 켜면 생깁니다.';
   }
@@ -353,7 +392,9 @@ function doAddTransactions(args) {
                  Array.isArray(args.edits) || Array.isArray(args.deletes) || typeof args.verified === 'boolean' ||
                  args.salary !== undefined;
   if (!NEW.length && !hasOps) return '추가할 거래가 없습니다.';
-  requireInbox();
+  const blocked = blockedLocal();
+  if (blocked) throw new Error(blocked);
+  const INBOX = inboxFile();
   const cur = readJSONStrict(INBOX, { version: 1, transactions: [] });
   if (!cur.transactions) cur.transactions = [];
   const cfg = readJSON(CONFIG, null) || {};
@@ -690,7 +731,7 @@ function handle(line) {
       ok(id, {
         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'bueong', version: '1.1.0' },
+        serverInfo: { name: 'bueong', version: '1.1.1' },
         instructions: INSTRUCTIONS
       });
       break;
