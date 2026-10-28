@@ -371,10 +371,23 @@ function doGetTransactions(args) {
     return T('가계부엉 사본(state.json)이 없어 거래를 읽을 수 없습니다. 맥에서 가계부엉을 켜고 설정 → 「클로드 연동」을 켜면 생깁니다.',
       'There’s no Budget Notebook snapshot (state.json), so transactions can’t be read. Open Budget Notebook on the Mac and turn on Settings → Claude Link to create it.');
   }
-  const isDay = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const isDay = v => {
+    if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const d = new Date(v + 'T00:00:00Z');   // 13월·2월 30일은 날짜가 아니다
+    return !isNaN(d) && d.toISOString().slice(0, 10) === v;
+  };
+  // 비었으면 기본값, 틀린 꼴이면 오류. 전에는 틀린 날짜를 말없이 이번 달로 바꿔 읽어서,
+  // 클로드가 엉뚱한 기간의 합계를 답할 수 있었다(2026-10-28 영어판 연동 시험에서 찾음).
+  const blank = v => v == null || String(v).trim() === '';
+  for (const k of ['from', 'to']) {
+    if (!blank(args[k]) && !isDay(String(args[k]).trim())) {
+      throw new Error(T(`${k} 날짜 꼴이 틀렸습니다: "${args[k]}" — YYYY-MM-DD 로 보내세요(비우면 기본값)`,
+                        `${k} isn’t a valid date: "${args[k]}" — send YYYY-MM-DD (leave it empty for the default)`));
+    }
+  }
   const today = todayStr();
-  const from = isDay(args.from) ? args.from : today.slice(0, 8) + '01';
-  const to = isDay(args.to) ? args.to : '9999-12-31';
+  const from = blank(args.from) ? today.slice(0, 8) + '01' : String(args.from).trim();
+  const to = blank(args.to) ? '9999-12-31' : String(args.to).trim();
   if (from > to) throw new Error(T('from 이 to 보다 뒤입니다', 'from is after to'));
   const eq = (want, got) => !want || String(got || '').trim() === String(want).trim();
   const rows = st.transactions
@@ -1049,7 +1062,7 @@ const INSTRUCTIONS_EN = "## What this app does\nBudget Notebook (a budgeting app
 // - 가계부 자료는 아무것도 보내지 않는다(GET 한 번, 머리글은 User-Agent 뿐).
 // - 실패하면 조용히 넘어간다. 확인한 시각은 실패해도 적어 하루 안에 다시 안 묻는다.
 // - 끄기: 환경변수 BUEONG_UPDATE_CHECK=off(또는 false·0·no). 확장 설치 화면의 「새 판 확인」이 이 값을 넣는다.
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const RELEASES_URL = 'https://api.github.com/repos/impro0126-pixel/bueong-claude/releases/latest';
 const UPDATE_CACHE = path.join(CONFIG_DIR, 'update-check.json');
 const DAY_MS = 24 * 60 * 60 * 1000;
