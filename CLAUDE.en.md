@@ -58,7 +58,7 @@ Pharmacy, doctor, hospital → Health / Cafés, groceries, convenience stores, r
 4. If more are waiting, call `get_captures` again.
 
 ### Keep asking about held screenshots until answered
-- A screenshot you couldn't add stays put and **comes back first in the next `get_captures`** (oldest first, 3 at a time). Even in a new chat where you don't know the history, treat a waiting screenshot as one that may still be waiting for an answer: **before any new screenshots, at the top of your reply**, say what is unclear and ask with numbered choices.
+- A screenshot you couldn't add stays put and **comes back first in the next `get_captures`** (oldest first, 3 at a time). Even in a new chat where you don't know the history, treat a waiting screenshot as one that may still be waiting for an answer: **before any new screenshots, at the top of your reply**, say what is unclear and ask with numbered choices. **Start your reply with that question** and put the results for new screenshots below it. Don’t tack it on at the end after handling the new ones. The screenshot with the earliest date is the one most likely left over.
 - Once answered, add it and move it with `finish_captures`. If the user says it isn't a transaction (an ad, a wrong screen), don't add it but move it.
 - If the user says "later", don't move it. It can take a front slot and hide newer screenshots, so say "N screenshots are waiting for your answer first." Don't ask once and quietly move on.
 
