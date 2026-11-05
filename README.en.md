@@ -47,6 +47,8 @@ Not sure what to ask? In the chat box, choose **＋ → Connectors → Add from 
 2. Pick screenshots on the Write screen and send them. You can add a one-line note ("this was a team dinner").
 3. In Claude chat on the Mac, say "Process my screenshots". Claude reads them and puts them in the Inbox, and the iPhone shows **Processed on Mac** for the ones it added.
 
+It works well to just send screenshots as you pay and say "Process my screenshots" once a day (say, in the evening). If Claude left a screenshot because it couldn't decide the category, it asks about it first the next time. If you say something like "everything on this card is business", Claude remembers that for the merchants on that card.
+
 Screenshots travel to the Mac through iCloud Drive, so it must be on for both the iPhone and the Mac.
 
 ## Where does my data go?
