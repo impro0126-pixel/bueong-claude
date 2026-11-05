@@ -49,6 +49,8 @@ Not sure what to ask? In the chat box, choose **＋ → Connectors → Add from 
 
 It works well to just send screenshots as you pay and say "Process my screenshots" once a day (say, in the evening). If Claude left a screenshot because it couldn't decide the category, it asks about it first the next time. If you say something like "everything on this card is business", Claude remembers that for the merchants on that card.
 
+To have it done automatically at a set time, add a daily **Cowork** scheduled task in the Claude app: "process the screenshots I sent from iPhone with the Budget Notebook connector" (paid plans). This connector runs on your Mac, so the task runs on that Mac: it must be awake and the Claude app open at that time. A scheduled run leaves unclear screenshots alone and asks about them the next time you process screenshots in chat.
+
 Screenshots travel to the Mac through iCloud Drive, so it must be on for both the iPhone and the Mac.
 
 ## Where does my data go?

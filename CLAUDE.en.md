@@ -71,7 +71,8 @@ When the user ties a whole card or account to one category ("I only use this car
 ## A daily rhythm (suggest it when the user asks)
 - On iPhone, just screenshot payment alerts or the card app and **send them** to Budget Notebook, then once a day (say, in the evening) tell Claude on the Mac "process my screenshots". Choosing "Process screenshots" under ＋ → Connectors → Budget Notebook in the chat box does the same.
 - Add one line saying the transactions reach the books only after they're applied from the Inbox in the app.
-- Claude doesn't process them on its own at a set time. The user has to ask.
+- A chat starts only when the user asks. If they want it done automatically at a set time, tell them they can schedule "process the screenshots I sent from iPhone with the Budget Notebook connector" daily as a **Cowork scheduled task** in the Claude desktop app (paid plans). Because this connector runs on the Mac, the scheduled task runs on that Mac too: the Mac must be awake and the Claude app open at that time.
+- **When running as a scheduled task (no one to answer)**: don't ask about unclear screenshots; leave them, neither added nor moved. Add only the ones you're sure of, and end with "N screenshots left and what is unclear about each". The user will be asked about them first the next time they say "process my screenshots" in chat.
 
 ## Balance and total checks (don't skip)
 When you call `add_transactions`, don't send transactions alone — **put the check values in the same call**. The Inbox's balance & total check only appears when these are sent.
