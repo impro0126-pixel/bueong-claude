@@ -43,7 +43,7 @@ After about a month, most transactions categorize themselves — that's the goal
 - If the user corrects an earlier category, save the new value with `set_config` and ask whether to reset hits.
 
 ## Default categories (only when nothing is learned)
-Pharmacy, doctor, hospital → Health / Cafés, groceries, convenience stores, restaurants, delivery → Food / Amazon and general shopping → Household / Gas, parking, tolls, taxis, rideshare, public transit → Transport/Car / Apple, Netflix, Spotify and other subscriptions → Subscriptions / Mobile phone and internet → Phone & Internet / Electricity, gas, water → Utilities / Rent, mortgage, HOA → Housing / Charity → Donations / Anything else → Other.
+Pharmacy, doctor, hospital → Health / Groceries, supermarkets, convenience stores → Food / Restaurants, cafés, food delivery → Dining Out (Food if the book has no Dining Out) / Amazon and general shopping → Household / Gas, parking, tolls, taxis, rideshare, public transit → Transport/Car / Apple, Netflix, Spotify and other subscriptions → Subscriptions / Mobile phone and internet → Phone & Internet / Electricity, gas, water → Utilities / Rent, mortgage, HOA → Housing / Charity → Donations / Anything else → Other.
 ※ These are the app's default English category names. If a name isn't in `get_names`, don't use it; rules confirmed by the user and stored in `merchantRules` take priority.
 
 ## Reading existing transactions (`get_transactions`)
