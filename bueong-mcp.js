@@ -132,7 +132,13 @@ function ensureConfigMigrated() {
 }
 
 // inbox 파일 내 중복 방지용 키. 서로 다른 거래(같은 날·금액이라도 수단/입금계좌/내용 다름)는 구분되게 충분히 상세히.
-const txKey = t => `${t.date}|${Number(t.amount)}|${(t.payment || '').trim()}|${(t.toAccount || '').trim()}|${(t.desc || '').trim()}`;
+const isCalendarDay = v => {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(v + 'T00:00:00Z');
+  return !isNaN(d) && d.toISOString().slice(0, 10) === v;
+};
+const str = v => (v == null ? '' : String(v)).trim();   // 숫자로 온 상호(「7777」)에 .trim 이 없어 호출 전체가 죽던 것(2026-11-12)
+const txKey = t => `${t.date}|${Number(t.amount)}|${str(t.payment)}|${str(t.toAccount)}|${str(t.desc)}`;
 
 function readJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -172,7 +178,17 @@ function lookupRule(rules, desc) {
 function readJSONStrict(file, fallback) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); }
-  catch { return fallback; }                       // 파일 없음 → 정상적인 첫 시작
+  catch (e) {
+    if (e && e.code === 'ENOENT') return fallback; // 파일 없음 → 정상적인 첫 시작
+    // 있는데 못 읽음(권한, 아직 안 내려온 iCloud 파일의 EDEADLK 등)을 「없음」으로 보면
+    // 빈 것에서 시작해 대기 거래를 덮어쓴다(2026-11-12 점검). 깨진 파일과 같이 멈춘다.
+    throw new Error(T(
+      `${path.basename(file)} 을(를) 읽지 못해 덮어쓰지 않고 중단합니다(${(e && e.code) || e}). ` +
+      `iCloud Drive 가 파일을 아직 내려받는 중일 수 있습니다. 잠시 뒤 다시 시도하세요.`,
+      `Couldn’t read ${path.basename(file)} (${(e && e.code) || e}), so it was not overwritten. ` +
+      `iCloud Drive may still be downloading it. Try again in a moment.`
+    ));
+  }
   try { return JSON.parse(raw); }
   catch (e) {
     throw new Error(T(
@@ -203,6 +219,66 @@ function writeJSONAtomic(file, obj) {
 function isUnderICloudDrive(file) {
   return path.resolve(file).startsWith(path.join(HOME, 'Library', 'Mobile Documents') + path.sep);
 }
+// ---- 받은편지함 쓰기 규칙 (2026-11-12 점검 「다」) ----
+// inbox.json 은 이 서버(클로드 앱·Code 가 따로 띄워 둘 이상일 수 있다)·월간자산동기화.py·앱이 함께 쓴다.
+// ① 서버끼리·파이썬과는 잠금 파일(`.inbox.json.lock`)로 차례를 지킨다. 30초 넘은 잠금은 죽은 것으로 본다.
+// ② 앱은 파일 조정(NSFileCoordinator)이라 잠금을 모른다 — 그래서 쓰기 직전에 파일을 다시 읽어, 처음 읽은 뒤
+//    바뀌었으면 **새 파일 위에 이번 호출 몫만 다시 얹는다**(`mergeInboxDelta`). 덮어써서 남의 줄을 지우지 않는다.
+const LOCK_STALE_MS = 30_000;
+function withInboxLock(file, fn) {
+  // 폴더가 아직 없으면 잠글 자리도 없다 — 쓰기 쪽(`writeInboxAll`)이 「앱을 한 번 켜세요」로 알린다.
+  if (!fs.existsSync(path.dirname(file))) return fn();
+  const lock = path.join(path.dirname(file), '.inbox.json.lock');
+  const until = Date.now() + 10_000;
+  for (;;) {
+    try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); break; }
+    catch (e) {
+      if (!e || e.code !== 'EEXIST') throw e;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.unlinkSync(lock); continue; } } catch { continue; }
+      if (Date.now() > until) throw new Error(T('받은편지함을 다른 작업이 쓰고 있어 기다리다 멈췄습니다. 잠시 뒤 다시 시도하세요.',
+                                                'Another task is writing the Inbox; gave up waiting. Try again in a moment.'));
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+  try { return fn(); } finally { try { fs.unlinkSync(lock); } catch {} }
+}
+function readRawOrNull(file) {
+  try { return fs.readFileSync(file, 'utf8'); }
+  catch (e) { if (e && e.code === 'ENOENT') return null; throw e; }
+}
+// 이번 호출이 바꾼 몫(delta)만 `base` 에 얹는다. 거래는 rowId·내용 키로 겹치지 않게, 대조값은 같은 열쇠만 갈아 끼운다.
+const balanceKey = b => `${b && b.account}|${b && b.date}`;
+const cardTotalKey = c => `${c && c.card}|${c && c.month}`;
+function upsertBy(list, items, key) {
+  const out = Array.isArray(list) ? list.slice() : [];
+  for (const it of items) {
+    const k = key(it), i = out.findIndex(x => key(x) === k);
+    if (i >= 0) out[i] = it; else out.push(it);
+  }
+  return out;
+}
+function appendUnique(list, items) {
+  const out = Array.isArray(list) ? list.slice() : [];
+  const seen = new Set(out.map(x => JSON.stringify(x)));
+  for (const it of items) { const k = JSON.stringify(it); if (!seen.has(k)) { seen.add(k); out.push(it); } }
+  return out;
+}
+function mergeInboxDelta(base, d) {
+  const cur = base && typeof base === 'object' ? base : { version: 1, transactions: [] };
+  if (!Array.isArray(cur.transactions)) cur.transactions = [];
+  const have = new Set(cur.transactions.map(t => t && t.rowId).filter(Boolean));
+  const keys = new Set(cur.transactions.map(txKey));
+  for (const t of d.transactions) if (!have.has(t.rowId) && !keys.has(txKey(t))) cur.transactions.push(t);
+  if (d.balances.length) cur.balances = upsertBy(cur.balances, d.balances, balanceKey);
+  if (d.cardTotals.length) cur.cardTotals = upsertBy(cur.cardTotals, d.cardTotals, cardTotalKey);
+  if (d.edits.length) cur.edits = appendUnique(cur.edits, d.edits);
+  if (d.deletes.length) cur.deletes = appendUnique(cur.deletes, d.deletes);
+  if (d.salary !== undefined) cur.salary = d.salary;
+  if (d.verified !== undefined) cur.verified = d.verified;
+  cur.version = 1;
+  return cur;
+}
+
 function writeInboxAll(obj) {
   return inboxTargets().map(t => {
     try {
@@ -587,8 +663,18 @@ function doAddTransactions(args) {
   const blocked = blockedLocal();
   if (blocked) throw new Error(blocked);
   const INBOX = inboxFile();
-  const cur = readJSONStrict(INBOX, { version: 1, transactions: [] });
+  // 아직 안 내려온 아이클라우드 파일은 `.inbox.json.icloud` 자리표시로만 있다. 그때 「없음」으로 보고 새로 쓰면
+  // 내려오지 않은 대기 거래를 덮는다(2026-11-12 점검 — `state.json` 은 이미 같은 검사를 한다).
+  if (!fs.existsSync(INBOX) && fs.existsSync(path.join(path.dirname(INBOX), '.inbox.json.icloud'))) {
+    throw new Error(T(
+      '받은편지함(inbox.json)이 아직 iCloud 에서 내려오지 않아 쓰지 않고 중단합니다. 잠시 뒤 다시 시도하세요.',
+      'The Inbox file (inbox.json) hasn’t finished downloading from iCloud, so nothing was written. Try again in a moment.'));
+  }
+  const cur = readJSONStrict(INBOX, { version: 1, transactions: [] });   // 못 읽음·깨짐이면 여기서 알기 쉬운 말로 멈춘다
+  const firstRaw = readRawOrNull(INBOX);
   if (!cur.transactions) cur.transactions = [];
+  const myRows = new Set();      // 이번 호출이 더한 줄(rowId) — 쓰기 직전 합치기에 쓴다
+  let racedRetries = 0;
   const cfg = readJSON(CONFIG, null) || {};
   const names = configNames();
   // 앱 사본이 있으면 그것이 정본이다 — 설정(config)의 이름은 사람이 불러 준 것이라 낡거나 틀릴 수 있다.
@@ -632,12 +718,14 @@ function doAddTransactions(args) {
     taxWarns.push(...s.warns);
   }
   for (const t of NEW) {
-    if (!t || !t.date || !t.desc || !Number.isFinite(Number(t.amount)) || Number(t.amount) === 0) { markInvalid(t); continue; }   // 음수 허용(보험금 환급 = 건강지출 차감 등)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date)) { markInvalid(t); continue; }   // YYYY-MM-DD 아니면 건너뜀(유령거래 방지)
+    if (!t || !t.date || !str(t.desc) || !Number.isFinite(Number(t.amount)) || Number(t.amount) === 0) { markInvalid(t); continue; }   // 음수 허용(보험금 환급 = 건강지출 차감 등)
+    if (!isCalendarDay(t.date)) { markInvalid(t); continue; }
+    // 틀린 유형(「Income」·「이체」)을 말없이 지출로 바꾸지 않는다 — 월급이 지출로 들어가던 길(2026-11-12 점검). 빈 값만 지출.
+    if (t.type != null && t.type !== '' && !VALID_TYPES.has(t.type)) { markInvalid(t); continue; }   // YYYY-MM-DD 이고 달력에 있는 날만(13월·2월 30일은 앱이 깨진 줄로 버린다)
     const obj = {
-      date: t.date, desc: t.desc, amount: Number(t.amount),
-      payment: t.payment || '', category: t.category || '',
-      type: VALID_TYPES.has(t.type) ? t.type : 'expense', cashReceipt: !!t.cashReceipt
+      date: t.date, desc: str(t.desc), amount: Number(t.amount),
+      payment: str(t.payment), category: str(t.category),
+      type: t.type == null || t.type === '' ? 'expense' : t.type, cashReceipt: !!t.cashReceipt
     };
     // 연말정산 세법분류: 지출과 계좌이체(연금·청약 납입)에만 유효. 오타 방지를 위해 허용 목록 밖은 버리고 경고한다.
     // 이체에는 대상(taxBeneficiary)을 싣지 않는다 — 엔진이 연금계좌 공제를 본인 것만 센다.
@@ -677,15 +765,16 @@ function doAddTransactions(args) {
     }
     // 줄마다 고유 번호 — 앱이 「이 줄을 처리했다」를 서명 대신 이것으로 적는다(겹치는 결제가 안 사라지게).
     obj.rowId = require('crypto').randomUUID();
+    myRows.add(obj.rowId);
     cur.transactions.push(obj); added++;
   }
-  // 단언/카드합계/수정 작업은 현재 상태에 대한 주장이므로 통째로 덮어쓴다.
-  if (Array.isArray(args.balances)) cur.balances = args.balances;
-  if (Array.isArray(args.cardTotals)) cur.cardTotals = args.cardTotals;
+  // 대조값·수정·지우기는 **쌓는다**(2026-11-12) — 전에는 통째로 덮어써서, 앱이 반영하기 전에 다음 호출이 오면
+  // 앞 호출의 것이 말없이 사라졌다(A카드 합계 뒤 B카드 합계만 보내면 A가 지워짐). 같은 계좌·날짜, 같은 카드·달은 새 값으로.
+  let newEdits = [];
   if (Array.isArray(args.edits)) {
     // set.taxCategory 만 검사한다: 허용 값이거나 빈 글자(표시 지우기). 틀린 값은 그 칸만 빼고,
     // 바꿀 칸이 하나도 안 남은 수정은 통째로 뺀다(가계부엉도 빈 set 은 버린다). 나머지 칸은 예전처럼 그대로 싣는다.
-    cur.edits = args.edits.flatMap(e => {
+    newEdits = args.edits.flatMap(e => {
       if (!e || typeof e !== 'object' || !e.set || typeof e.set !== 'object' || !('taxCategory' in e.set)) return [e];
       const set = { ...e.set };
       const tc = typeof set.taxCategory === 'string' ? set.taxCategory.trim() : set.taxCategory;
@@ -699,14 +788,29 @@ function doAddTransactions(args) {
       return Object.keys(set).length ? [{ ...e, set }] : [];
     });
   }
-  if (app && Array.isArray(cur.edits) && Array.isArray(args.edits)) {
-    cur.edits.forEach(e => e && e.set && checkName(T('분류', 'category'), e.set.category, appCat));
-  }
-  if (Array.isArray(args.deletes)) cur.deletes = args.deletes;
-  // verified 는 "이 파일이 완전한 명세서인가"에 대한 주장이라 켜고 끄기가 둘 다 뜻이 있다.
-  if (typeof args.verified === 'boolean') cur.verified = args.verified;
-  cur.version = 1;
-  const writes = writeInboxAll(cur);
+  if (app) newEdits.forEach(e => e && e.set && checkName(T('분류', 'category'), e.set.category, appCat));
+  // verified(「이 묶음은 완전한 명세서」)는 그 호출의 줄에 대한 주장이다. 앱은 이 값을 지우지 않으므로, 전에는 한 번 켜지면
+  // 그 뒤 다른 루틴이 보낸 줄까지 「3일 안 의심」 검사가 꺼졌다(2026-11-12 점검). 이제 거래를 싣는 호출이 verified 를
+  // 안 주면 끈다 — 섞인 파일은 완전한 명세서가 아니다.
+  const verified = typeof args.verified === 'boolean' ? args.verified : (added > 0 ? false : undefined);
+  const delta = {
+    transactions: cur.transactions.filter(t => myRows.has(t.rowId)),
+    balances: Array.isArray(args.balances) ? args.balances : [],
+    cardTotals: Array.isArray(args.cardTotals) ? args.cardTotals : [],
+    edits: newEdits,
+    deletes: Array.isArray(args.deletes) ? args.deletes : [],
+    salary: args.salary !== undefined ? cur.salary : undefined,
+    verified,
+  };
+  // 잠금 안에서: 처음 읽은 뒤 파일이 바뀌었으면(앱 반영·다른 루틴) 새 파일 위에 이번 몫만 얹는다.
+  const final = withInboxLock(INBOX, () => {
+    const now = readRawOrNull(INBOX);
+    const base = now === firstRaw ? JSON.parse(firstRaw || '{"version":1,"transactions":[]}')
+                                  : readJSONStrict(INBOX, { version: 1, transactions: [] });
+    if (now !== firstRaw) racedRetries++;
+    return mergeInboxDelta(base, delta);
+  });
+  const writes = withInboxLock(INBOX, () => writeInboxAll(final));
   // 한 곳도 못 썼으면 그건 진짜 실패다. 거래를 기록했다고 말하면 안 된다.
   if (!writes.some(w => w.ok)) {
     throw new Error(T('받은편지함을 한 곳에도 쓰지 못했습니다 — ', 'Couldn’t write the Inbox anywhere — ') +
@@ -721,7 +825,7 @@ function doAddTransactions(args) {
   if (args.salary !== undefined) extra.push(`급여명세서 ${salaryMonths}개월`);
   if (args.balances) extra.push(T(`잔액대조 ${args.balances.length}`, `${args.balances.length} balance checks`));
   if (args.cardTotals) extra.push(T(`카드합계 ${args.cardTotals.length}`, `${args.cardTotals.length} card totals`));
-  if (args.edits) extra.push(T(`수정 ${cur.edits.length}`, `${cur.edits.length} edits`));
+  if (args.edits) extra.push(T(`수정 ${newEdits.length}`, `${newEdits.length} edits`));
   if (args.deletes) extra.push(T(`삭제 ${args.deletes.length}`, `${args.deletes.length} deletions`));
   if (typeof args.verified === 'boolean') extra.push(T(`완전명세 ${args.verified ? 'on' : 'off'}`, `complete statement ${args.verified ? 'on' : 'off'}`));
   if (extra.length) msg += T(' (' + extra.join(' · ') + ' 포함)', ' (includes ' + extra.join(' · ') + ')');
@@ -1070,7 +1174,7 @@ const INSTRUCTIONS_EN = "## What this app does\nBudget Notebook (a budgeting app
 // - 가계부 자료는 아무것도 보내지 않는다(GET 한 번, 머리글은 User-Agent 뿐).
 // - 실패하면 조용히 넘어간다. 확인한 시각은 실패해도 적어 하루 안에 다시 안 묻는다.
 // - 끄기: 환경변수 BUEONG_UPDATE_CHECK=off(또는 false·0·no). 확장 설치 화면의 「새 판 확인」이 이 값을 넣는다.
-const VERSION = '1.4.6';
+const VERSION = '1.4.7';
 const RELEASES_URL = 'https://api.github.com/repos/impro0126-pixel/bueong-claude/releases/latest';
 const UPDATE_CACHE = path.join(CONFIG_DIR, 'update-check.json');
 const DAY_MS = 24 * 60 * 60 * 1000;
